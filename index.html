@@ -139,6 +139,7 @@ const S = {
   g:[0,-9.81,0], gMagWin:[],    // low-passed gravity, steadiness window
   ori:null,                     // latest deviceorientation [alpha,beta,gamma]
   yaw:0, dir:0, lastT:null, maxRate:0,
+  hPrev:null, oriSeen:0, rate:0, src:"—",   // heading unwrap state + active yaw source
   nextIdx:0, shots:[], frames:[], imu:[], t0:0,
   lockResult:"not attempted", wakeLock:null, capturing:false
 };
@@ -236,7 +237,18 @@ function startSensors(){
   window.addEventListener("deviceorientation", onOrient);
 }
 function onOrient(e){
-  if (e.alpha!=null || e.beta!=null) S.ori=[e.alpha||0, e.beta||0, e.gamma||0];
+  if (e.alpha!=null || e.beta!=null){
+    S.ori=[e.alpha||0, e.beta||0, e.gamma||0];
+    S.oriSeen=now();
+    if (S.phase==="rotate"){
+      const h=headingFromOri(S.ori);          // deg, world ENU azimuth of camera axis
+      if (h!==null){
+        if (S.hPrev===null) S.hPrev=h;
+        else { S.yaw += wrap180(h-S.hPrev); S.hPrev=h; }
+        S.src="ori"; updateRotation();
+      }
+    }
+  }
   S.imu.push({t:+now().toFixed(2), type:"ori",
     a:rd(e.alpha), b:rd(e.beta), g:rd(e.gamma), abs:!!e.absolute});
 }
@@ -257,23 +269,26 @@ function onMotion(e){
   if (S.phase==="level") levelStep(ax,ay,az,gm);
 
   if (S.phase==="rotate"){
-    /* yaw rate = gyro vector projected on gravity axis */
-    const rate=(rg*S.g[0]+rb*S.g[1]+ra*S.g[2])/gm;
-    //const rate=(rb*S.g[0]+rg*S.g[1]+ra*S.g[2])/gm;    // deg/s, sign platform-dependent
-    if (S.lastT!==null){
-      const dtEv   = (e.interval > 0) ? e.interval/1000 : 0;  // true sensor period
-      const dtWall = (t-S.lastT)/1000;                        // handler wall clock
-      const dt = Math.min(0.25, Math.max(dtWall, dtEv));      // burst→dtEv, drop→dtWall
-      S.yaw+=rate*dt;
-      S.maxRate=Math.max(S.maxRate,Math.abs(rate));
-    }
-    S.lastT=t;
-    if (S.dir===0 && Math.abs(S.yaw)>4) S.dir=Math.sign(S.yaw);  // auto CW/CCW
-    const prog=S.dir? S.dir*S.yaw : Math.abs(S.yaw);
-    rotateUI(prog, Math.abs(rate));
-    const target=S.nextIdx*S.step;
-    if (S.nextIdx<=S.n && prog>=target && !S.capturing) takeShot(prog, Math.abs(rate));
+    /* yaw rate = gyro vector projected on gravity axis (rate readout only) */
+    const rate=(rb*S.g[0]+rg*S.g[1]+ra*S.g[2])/gm;    // deg/s, sign platform-dependent
+    S.rate=Math.abs(rate);
+    S.maxRate=Math.max(S.maxRate,S.rate);
+    /* fallback: integrate only when deviceorientation has gone silent */
+    if (now()-S.oriSeen > 300){
+      if (S.lastT!==null) S.yaw += rate*Math.min(0.25,(t-S.lastT)/1000);
+      S.lastT=t; S.src="gyro"; updateRotation();
+    } else S.lastT=t;
   }
+}
+
+/* single place where progress + shot firing is decided, whatever the yaw source */
+function updateRotation(){
+  if (S.dir===0 && Math.abs(S.yaw)>20) S.dir=Math.sign(S.yaw);   // auto CW/CCW
+  const prog=S.dir? S.dir*S.yaw : Math.abs(S.yaw);
+  $("state").textContent="ROTATE ["+S.src+"]";
+  rotateUI(prog, S.rate);
+  const target=S.nextIdx*S.step;
+  if (S.nextIdx<=S.n && prog>=target && !S.capturing) takeShot(prog, S.rate);
 }
 const rd = v => v==null?null:+(+v).toFixed(4);
 
@@ -304,6 +319,7 @@ function levelStep(ax,ay,az,gm){
 
 async function beginRotation(){
   S.phase="rotate"; S.yaw=0; S.dir=0; S.lastT=null; S.nextIdx=0;
+  S.hPrev=null; S.rate=0; S.src=(now()-S.oriSeen<300)?"ori":"gyro";
   $("level").hidden=true; $("dial").hidden=false;
   $("state").textContent="ROTATE";
   buildTicks();
@@ -389,6 +405,17 @@ function qRotConj(q,v){               // rotate v (world) into device frame: q^-
   const t=cross(u,v).map(c=>2*c), ct=cross(u,t);
   return [v[0]+w*t[0]+ct[0], v[1]+w*t[1]+ct[1], v[2]+w*t[2]+ct[2]];
 }
+function qRotVec(q,v){                // rotate v (device frame) into world ENU: q * v * q^-1
+  const u=[q[1],q[2],q[3]], w=q[0];
+  const t=cross(u,v).map(c=>2*c), ct=cross(u,t);
+  return [v[0]+w*t[0]+ct[0], v[1]+w*t[1]+ct[1], v[2]+w*t[2]+ct[2]];
+}
+const wrap180 = d => ((d+540)%360)-180;
+function headingFromOri(o){           // azimuth of the camera optical axis, deg
+  const v=qRotVec(quatFromOri(o[0],o[1],o[2]), [0,0,-1]);   // device -z = back camera
+  if (Math.hypot(v[0],v[1])<0.15) return null;              // near-vertical: ill-posed
+  return Math.atan2(v[0],v[1])*180/Math.PI;                 // ENU: x=east, y=north
+}
 function worldToDev(v){
   if (S.ori) return qRotConj(quatFromOri(...S.ori), v);
   /* gravity-only fallback (yaw arbitrary; iOS flips accel sign vs Android) */
@@ -466,9 +493,10 @@ $("dlBtn").addEventListener("click", async ()=>{
     track_capabilities:safe(()=>S.track.getCapabilities())||null,
     exposure_lock:S.lockResult,
     max_rate_dps:+S.maxRate.toFixed(1),
+    yaw_source:S.src,
     closure_residual_deg:+(S.shots[S.shots.length-1].gyro_yaw_deg-360).toFixed(2),
     shots:S.shots,
-    notes:"Capture orientation: landscape (gravity expected on device x axis). imu.jsonl: type 'mot' = devicemotion (ax..az m/s^2 incl gravity, rx..rz deg/s, device axes x,y,z; rx=beta, ry=gamma, rz=alpha), type 'ori' = deviceorientation. t = performance.now() ms, same clock as shots[].t. Yaw = gyro projected on low-passed gravity; sign auto-detected from initial motion."
+    notes:"Capture orientation: landscape (gravity expected on device x axis). imu.jsonl: type 'mot' = devicemotion (ax..az m/s^2 incl gravity, rx..rz deg/s, device axes x,y,z; rx=beta, ry=gamma, rz=alpha), type 'ori' = deviceorientation. t = performance.now() ms, same clock as shots[].t. Yaw = unwrapped azimuth of the camera axis from the deviceorientation quaternion (yaw_source 'ori'); gyro projected on low-passed gravity is used only if orientation events stall >300 ms (yaw_source 'gyro'). Sign auto-detected from initial motion."
   };
   const files=[
     {name:"meta.json", data:strBytes(JSON.stringify(meta,null,2))},
