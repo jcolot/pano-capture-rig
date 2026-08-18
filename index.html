@@ -260,7 +260,9 @@ function onMotion(e){
     /* yaw rate = gyro vector projected on gravity axis */
     const rate=(rb*S.g[0]+rg*S.g[1]+ra*S.g[2])/gm;    // deg/s, sign platform-dependent
     if (S.lastT!==null){
-      const dt=Math.min(0.1,(t-S.lastT)/1000);
+      const dtEv   = (e.interval > 0) ? e.interval/1000 : 0;  // true sensor period
+      const dtWall = (t-S.lastT)/1000;                        // handler wall clock
+      const dt = Math.min(0.25, Math.max(dtWall, dtEv));      // burst→dtEv, drop→dtWall
       S.yaw+=rate*dt;
       S.maxRate=Math.max(S.maxRate,Math.abs(rate));
     }
