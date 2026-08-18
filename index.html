@@ -258,7 +258,8 @@ function onMotion(e){
 
   if (S.phase==="rotate"){
     /* yaw rate = gyro vector projected on gravity axis */
-    const rate=(rb*S.g[0]+rg*S.g[1]+ra*S.g[2])/gm;    // deg/s, sign platform-dependent
+    const rate=(rg*S.g[0]+rb*S.g[1]+ra*S.g[2])/gm;
+    //const rate=(rb*S.g[0]+rg*S.g[1]+ra*S.g[2])/gm;    // deg/s, sign platform-dependent
     if (S.lastT!==null){
       const dtEv   = (e.interval > 0) ? e.interval/1000 : 0;  // true sensor period
       const dtWall = (t-S.lastT)/1000;                        // handler wall clock
