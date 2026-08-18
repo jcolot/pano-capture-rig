@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Pano Capture Rig</title>
+<style>
+  :root{
+    --bg:#0b0f12; --panel:#141a1f; --ink:#e8eef2; --dim:#7d8b94;
+    --acc:#ffd21f; --ok:#39d98a; --warn:#ff6a4d; --line:#242e36;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent;}
+  html,body{height:100%; overflow:hidden;}
+  body{background:var(--bg); color:var(--ink);
+    font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:14px;}
+  #stage{position:fixed; inset:0;}
+  video{position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#000;}
+  .hud{position:absolute; inset:0; display:flex; flex-direction:column;
+    justify-content:space-between; pointer-events:none;}
+  .hud > *{pointer-events:auto;}
+  .bar{padding:max(12px, env(safe-area-inset-top)) 16px 10px;
+    background:linear-gradient(#000c,#0000); display:flex; justify-content:space-between; gap:8px;}
+  .bar b{color:var(--acc); font-weight:600;}
+  .foot{padding:12px 16px max(16px, env(safe-area-inset-bottom));
+    background:linear-gradient(#0000,#000c); text-align:center;}
+  /* setup panel */
+  #setup{position:fixed; inset:0; background:var(--bg); z-index:10;
+    display:flex; flex-direction:column; justify-content:center; padding:28px; gap:18px;}
+  #setup h1{font-size:18px; letter-spacing:.12em; text-transform:uppercase;}
+  #setup h1 span{color:var(--acc);}
+  #setup p{color:var(--dim); line-height:1.5;}
+  .field{display:flex; align-items:center; justify-content:space-between; gap:12px;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px;}
+  .field label{color:var(--dim);}
+  .field input,.field select{background:transparent; border:none; color:var(--ink);
+    font:inherit; font-size:16px; text-align:right; width:7em; outline:none;}
+  button.big{background:var(--acc); color:#111; border:none; border-radius:12px;
+    padding:16px; font:inherit; font-size:16px; font-weight:700; letter-spacing:.06em;
+    text-transform:uppercase; cursor:pointer;}
+  button.big:disabled{background:var(--line); color:var(--dim);}
+  #err{color:var(--warn); white-space:pre-wrap;}
+  /* level bubble */
+  #level{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:180px; height:180px; border-radius:50%; border:1px solid #fff5;
+    background:#0006; backdrop-filter:blur(2px);}
+  #level::after{content:""; position:absolute; left:50%; top:50%; width:44px; height:44px;
+    transform:translate(-50%,-50%); border:1.5px solid var(--acc); border-radius:50%;}
+  #bubble{position:absolute; left:50%; top:50%; width:26px; height:26px; border-radius:50%;
+    background:var(--warn); transform:translate(-50%,-50%); transition:background .2s;}
+  #bubble.ok{background:var(--ok);}
+  /* rotation dial */
+  #dial{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:230px; height:230px;}
+  #dial svg{width:100%; height:100%; display:block;}
+  #yawText{position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:2px;}
+  #yawDeg{font-size:40px; font-weight:700; color:var(--acc); font-variant-numeric:tabular-nums;}
+  #shotCount{color:var(--dim);}
+  #hint{min-height:1.4em; color:var(--ink);}
+  #hint.warn{color:var(--warn); font-weight:700;}
+  /* done panel */
+  #done{position:fixed; inset:0; background:var(--bg); z-index:10; display:none;
+    flex-direction:column; justify-content:center; padding:28px; gap:14px;}
+  #done h1{font-size:18px; letter-spacing:.12em; text-transform:uppercase; color:var(--ok);}
+  #done .row{display:flex; justify-content:space-between; padding:10px 0;
+    border-bottom:1px solid var(--line); color:var(--dim);}
+  #done .row b{color:var(--ink); font-variant-numeric:tabular-nums;}
+  #flash{position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none; z-index:5;}
+  #globe{position:absolute; top:calc(max(12px, env(safe-area-inset-top)) + 40px); right:12px;
+    width:120px; height:120px;}
+  #thumb{position:absolute; left:12px; bottom:calc(max(16px, env(safe-area-inset-bottom)) + 52px);
+    width:110px; border:1px solid var(--line); border-radius:6px; display:none;}
+</style>
+</head>
+<body>
+
+<!-- ============ SETUP ============ -->
+<div id="setup">
+  <h1>Pano capture <span>rig</span></h1>
+  <p>Phase-0 field instrument. Auto-fires n+1 stills every 360/n degrees while you rotate,
+     and logs the full IMU stream. Hold the phone in landscape.
+     Everything stays on this phone until you download the bundle.</p>
+  <div class="field"><label for="nIn">n (steps per turn)</label>
+    <input id="nIn" type="number" inputmode="numeric" min="8" max="120" value="36"></div>
+  <div class="field"><label for="hIn">Your height (m)</label>
+    <input id="hIn" type="number" inputmode="decimal" step="0.01" min="1.2" max="2.2" value="1.75"></div>
+  <div class="field"><label for="resIn">Capture size</label>
+    <select id="resIn">
+      <option value="640x480">640 × 480</option>
+      <option value="1280x720" selected>1280 × 720</option>
+      <option value="1920x1080">1920 × 1080</option>
+    </select></div>
+  <button class="big" id="startBtn">Start capture</button>
+  <div id="err"></div>
+</div>
+
+<!-- ============ LIVE ============ -->
+<div id="stage" hidden>
+  <video id="cam" playsinline muted autoplay></video>
+  <div class="hud">
+    <div class="bar"><span id="state">LEVEL</span><b id="target">—</b></div>
+    <div class="foot"><div id="hint">Landscape, camera level with the horizon, arm extended.</div></div>
+  </div>
+  <div id="level"><div id="bubble"></div></div>
+  <div id="dial" hidden>
+    <svg viewBox="0 0 100 100">
+      <g id="ticks"></g>
+      <circle cx="50" cy="50" r="44" fill="none" stroke="#ffffff30" stroke-width="1.5"/>
+      <circle id="prog" cx="50" cy="50" r="44" fill="none" stroke="var(--acc)" stroke-width="3"
+        stroke-linecap="round" stroke-dasharray="276.5" stroke-dashoffset="276.5"
+        transform="rotate(-90 50 50)"/>
+    </svg>
+    <div id="yawText"><div id="yawDeg">0°</div><div id="shotCount">0 / ?</div></div>
+  </div>
+  <canvas id="globe" width="240" height="240"></canvas>
+  <canvas id="thumb"></canvas>
+</div>
+<div id="flash"></div>
+
+<!-- ============ DONE ============ -->
+<div id="done">
+  <h1>Capture complete</h1>
+  <div class="row"><span>Frames</span><b id="dFrames">—</b></div>
+  <div class="row"><span>Gyro yaw at last shot</span><b id="dYaw">—</b></div>
+  <div class="row"><span>Closure residual (yaw − 360°)</span><b id="dClosure">—</b></div>
+  <div class="row"><span>IMU samples</span><b id="dImu">—</b></div>
+  <div class="row"><span>Exposure lock</span><b id="dLock">—</b></div>
+  <button class="big" id="dlBtn">Download bundle (.zip)</button>
+  <button class="big" id="againBtn" style="background:var(--panel); color:var(--ink);">New capture</button>
+</div>
+
+<script>
+"use strict";
+/* ---------------- state ---------------- */
+const S = {
+  n:36, step:10, height:1.75, w:1280, h:720,
+  stream:null, track:null, video:null, canvas:null, ctx:null,
+  phase:"idle",                 // idle | level | rotate | done
+  g:[0,-9.81,0], gMagWin:[],    // low-passed gravity, steadiness window
+  ori:null,                     // latest deviceorientation [alpha,beta,gamma]
+  yaw:0, dir:0, lastT:null, maxRate:0,
+  nextIdx:0, shots:[], frames:[], imu:[], t0:0,
+  lockResult:"not attempted", wakeLock:null, capturing:false
+};
+const $ = id => document.getElementById(id);
+const now = () => performance.now();
+
+/* ---------------- audio ---------------- */
+let AC=null;
+function beep(f=1200, ms=60){
+  try{
+    AC = AC || new (window.AudioContext||window.webkitAudioContext)();
+    const o=AC.createOscillator(), g=AC.createGain();
+    o.frequency.value=f; o.connect(g); g.connect(AC.destination);
+    g.gain.setValueAtTime(0.15, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(1e-4, AC.currentTime+ms/1000);
+    o.start(); o.stop(AC.currentTime+ms/1000);
+  }catch(e){}
+}
+
+/* ---------------- start ---------------- */
+$("startBtn").addEventListener("click", async ()=>{
+  $("err").textContent="";
+  S.n = Math.max(8, Math.min(120, parseInt($("nIn").value)||36));
+  S.step = 360/S.n;
+  S.height = parseFloat($("hIn").value)||1.75;
+  const [w,h] = $("resIn").value.split("x").map(Number); S.w=w; S.h=h;
+  try{
+    await requestMotionPermission();       // must run inside user gesture (iOS)
+    await openCamera();
+    startSensors();
+    try{ S.wakeLock = await navigator.wakeLock?.request("screen"); }catch(e){}
+    $("setup").style.display="none";
+    $("stage").hidden=false;
+    S.phase="level"; S.t0=now();
+    beep(700,40);
+  }catch(e){
+    $("err").textContent = "✗ " + (e.message||e) +
+      "\nCamera + motion sensors require HTTPS and granted permissions.";
+  }
+});
+
+async function requestMotionPermission(){
+  if (typeof DeviceMotionEvent!=="undefined" &&
+      typeof DeviceMotionEvent.requestPermission==="function"){
+    const r = await DeviceMotionEvent.requestPermission();   // iOS 13+
+    if (r!=="granted") throw new Error("Motion permission denied");
+  }
+  if (typeof DeviceOrientationEvent!=="undefined" &&
+      typeof DeviceOrientationEvent.requestPermission==="function"){
+    try{ await DeviceOrientationEvent.requestPermission(); }catch(e){}
+  }
+  if (typeof DeviceMotionEvent==="undefined")
+    throw new Error("DeviceMotion not available on this device/browser");
+}
+
+async function openCamera(){
+  S.stream = await navigator.mediaDevices.getUserMedia({
+    audio:false,
+    video:{ facingMode:{ideal:"environment"}, width:{ideal:S.w}, height:{ideal:S.h} }
+  });
+  S.track = S.stream.getVideoTracks()[0];
+  S.video = $("cam"); S.video.srcObject = S.stream;
+  await S.video.play();
+  const st = S.track.getSettings();
+  S.canvas = document.createElement("canvas");
+  S.canvas.width  = st.width  || S.w;
+  S.canvas.height = st.height || S.h;
+  S.ctx = S.canvas.getContext("2d");
+}
+
+/* try to freeze exposure / white balance after frame 0 (Android/Chrome only, usually) */
+async function tryExposureLock(){
+  try{
+    const caps = S.track.getCapabilities ? S.track.getCapabilities() : {};
+    const st   = S.track.getSettings();
+    const adv  = {};
+    if ((caps.exposureMode||[]).includes("manual")){
+      adv.exposureMode="manual";
+      if (st.exposureTime && caps.exposureTime) adv.exposureTime=st.exposureTime;
+      if (st.iso && caps.iso) adv.iso=st.iso;
+    }
+    if ((caps.whiteBalanceMode||[]).includes("manual")){
+      adv.whiteBalanceMode="manual";
+      if (st.colorTemperature && caps.colorTemperature) adv.colorTemperature=st.colorTemperature;
+    }
+    if (Object.keys(adv).length===0){ S.lockResult="unsupported"; return; }
+    await S.track.applyConstraints({advanced:[adv]});
+    S.lockResult="applied: "+JSON.stringify(adv);
+  }catch(e){ S.lockResult="failed: "+(e.message||e); }
+}
+
+/* ---------------- sensors ---------------- */
+function startSensors(){
+  window.addEventListener("devicemotion", onMotion);
+  window.addEventListener("deviceorientation", onOrient);
+}
+function onOrient(e){
+  if (e.alpha!=null || e.beta!=null) S.ori=[e.alpha||0, e.beta||0, e.gamma||0];
+  S.imu.push({t:+now().toFixed(2), type:"ori",
+    a:rd(e.alpha), b:rd(e.beta), g:rd(e.gamma), abs:!!e.absolute});
+}
+function onMotion(e){
+  const t = now();
+  const acc = e.accelerationIncludingGravity, rot = e.rotationRate;
+  const ax=acc?.x??0, ay=acc?.y??0, az=acc?.z??0;
+  const rb=rot?.beta??0, rg=rot?.gamma??0, ra=rot?.alpha??0;   // x,y,z axes (deg/s)
+  S.imu.push({t:+t.toFixed(2), type:"mot",
+    ax:rd(ax), ay:rd(ay), az:rd(az), rx:rd(rb), ry:rd(rg), rz:rd(ra),
+    iv:e.interval??null});
+
+  /* low-pass gravity */
+  const k=0.06;
+  S.g=[S.g[0]+k*(ax-S.g[0]), S.g[1]+k*(ay-S.g[1]), S.g[2]+k*(az-S.g[2])];
+  const gm=Math.hypot(...S.g)||1;
+
+  if (S.phase==="level") levelStep(ax,ay,az,gm);
+
+  if (S.phase==="rotate"){
+    /* yaw rate = gyro vector projected on gravity axis */
+    const rate=(rb*S.g[0]+rg*S.g[1]+ra*S.g[2])/gm;    // deg/s, sign platform-dependent
+    if (S.lastT!==null){
+      const dt=Math.min(0.1,(t-S.lastT)/1000);
+      S.yaw+=rate*dt;
+      S.maxRate=Math.max(S.maxRate,Math.abs(rate));
+    }
+    S.lastT=t;
+    if (S.dir===0 && Math.abs(S.yaw)>4) S.dir=Math.sign(S.yaw);  // auto CW/CCW
+    const prog=S.dir? S.dir*S.yaw : Math.abs(S.yaw);
+    rotateUI(prog, Math.abs(rate));
+    const target=S.nextIdx*S.step;
+    if (S.nextIdx<=S.n && prog>=target && !S.capturing) takeShot(prog, Math.abs(rate));
+  }
+}
+const rd = v => v==null?null:+(+v).toFixed(4);
+
+/* ---------------- leveling ---------------- */
+function levelStep(ax,ay,az,gm){
+  /* landscape, camera at horizon → gravity ≈ device ±x axis */
+  if (window.innerWidth < window.innerHeight){
+    $("hint").textContent="Turn the phone to landscape";
+    S.gMagWin.length=0; return;
+  }
+  const tilt = Math.acos(Math.min(1,Math.abs(S.g[0])/gm))*180/Math.PI;
+  const bxs = Math.sign(S.g[0])||1;
+  const bx = (S.g[1]/gm)*80*bxs, bz=(S.g[2]/gm)*80;
+  const b=$("bubble");
+  b.style.transform=`translate(calc(-50% + ${bx}px), calc(-50% + ${bz}px))`;
+  /* steadiness: variance of |a| over ~1 s */
+  S.gMagWin.push(Math.hypot(ax,ay,az));
+  if (S.gMagWin.length>60) S.gMagWin.shift();
+  const m=S.gMagWin.reduce((s,v)=>s+v,0)/S.gMagWin.length;
+  const sd=Math.sqrt(S.gMagWin.reduce((s,v)=>s+(v-m)**2,0)/S.gMagWin.length);
+  const ok = tilt<8 && sd<0.25 && S.gMagWin.length>=45;
+  b.classList.toggle("ok", tilt<8);
+  $("hint").textContent = ok ? "Steady — starting…"
+    : tilt>=8 ? "Level the phone (bubble in the ring)"
+    : "Hold still…";
+  if (ok) beginRotation();
+}
+
+async function beginRotation(){
+  S.phase="rotate"; S.yaw=0; S.dir=0; S.lastT=null; S.nextIdx=0;
+  $("level").hidden=true; $("dial").hidden=false;
+  $("state").textContent="ROTATE";
+  buildTicks();
+  await takeShot(0,0);              // frame 0 at yaw 0
+  await tryExposureLock();          // freeze AE/AWB if the platform allows
+  $("hint").textContent="Rotate slowly, arm extended. Shots fire automatically.";
+}
+
+/* ---------------- capture ---------------- */
+async function takeShot(progDeg, rateAbs){
+  if (S.capturing) return; S.capturing=true;
+  const idx=S.nextIdx;
+  try{
+    S.ctx.drawImage(S.video,0,0,S.canvas.width,S.canvas.height);
+    const blob=await new Promise(r=>S.canvas.toBlob(r,"image/jpeg",0.85));
+    S.frames.push(blob);
+    const tc=$("thumb");
+    if (tc.style.display!=="block"){ tc.style.display="block";
+      tc.width=220; tc.height=Math.round(220*S.canvas.height/S.canvas.width); }
+    tc.getContext("2d").drawImage(S.canvas,0,0,tc.width,tc.height);
+    S.shots.push({idx, t:+now().toFixed(2), target_deg:+(idx*S.step).toFixed(2),
+      gyro_yaw_deg:+progDeg.toFixed(3), rate_dps:+rateAbs.toFixed(1),
+      gravity:S.g.map(v=>+v.toFixed(3))});
+    flash(); beep(idx===S.n?500:1400,50);
+    S.nextIdx++;
+    $("shotCount").textContent=`${S.shots.length} / ${S.n+1}`;
+    if (idx>=S.n) finish();
+  } finally { S.capturing=false; }
+}
+function flash(){
+  const f=$("flash");
+  f.style.transition="none"; f.style.opacity=0.5;
+  requestAnimationFrame(()=>{f.style.transition="opacity .18s"; f.style.opacity=0;});
+}
+
+/* ---------------- rotation UI ---------------- */
+function buildTicks(){
+  const g=$("ticks"); let s="";
+  for(let k=0;k<=S.n;k++){
+    const a=(k*S.step-90)*Math.PI/180;
+    const x1=50+41*Math.cos(a), y1=50+41*Math.sin(a);
+    const x2=50+46*Math.cos(a), y2=50+46*Math.sin(a);
+    s+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#ffffff40" stroke-width="1"/>`;
+  }
+  g.innerHTML=s;
+}
+function rotateUI(prog, rate){
+  $("yawDeg").textContent=Math.round(prog)+"°";
+  $("target").textContent="next "+Math.round(Math.min(S.n,S.nextIdx)*S.step)+"°";
+  const C=276.5, f=Math.max(0,Math.min(1,prog/360));
+  $("prog").style.strokeDashoffset=C*(1-f);
+  const h=$("hint");
+  if (rate>45){ h.textContent="Slow down"; h.className="warn"; }
+  else if (h.className){ h.textContent="Rotate slowly, arm extended."; h.className=""; }
+}
+
+/* ---------------- attitude globe (versor / orthographic graticule) ---------------- */
+const GLB={ctx:$("globe").getContext("2d"), lines:[]};
+(function(){ const seg=48;
+  for(let lon=0;lon<180;lon+=30){                    // meridians (great circles)
+    const pl=[], lr=lon*Math.PI/180;
+    for(let i=0;i<=seg;i++){const t=2*Math.PI*i/seg;
+      pl.push([Math.cos(t)*Math.cos(lr), Math.cos(t)*Math.sin(lr), Math.sin(t)]);}
+    GLB.lines.push({p:pl, w:1});
+  }
+  for(let lat=-60;lat<=60;lat+=30){                  // parallels; equator = horizon
+    const pl=[], cl=Math.cos(lat*Math.PI/180), sl=Math.sin(lat*Math.PI/180);
+    for(let i=0;i<=seg;i++){const t=2*Math.PI*i/seg;
+      pl.push([cl*Math.cos(t), cl*Math.sin(t), sl]);}
+    GLB.lines.push({p:pl, w:lat===0?2.5:1, eq:lat===0});
+  }
+})();
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+function quatFromOri(a,b,g){          // ZXY intrinsic (w3c deviceorientation), degrees
+  const r=Math.PI/360, _a=a*r,_b=b*r,_g=g*r;
+  const cZ=Math.cos(_a),sZ=Math.sin(_a),cX=Math.cos(_b),sX=Math.sin(_b),
+        cY=Math.cos(_g),sY=Math.sin(_g);
+  return [cX*cY*cZ - sX*sY*sZ, sX*cY*cZ - cX*sY*sZ,
+          cX*sY*cZ + sX*cY*sZ, cX*cY*sZ + sX*sY*cZ];
+}
+function qRotConj(q,v){               // rotate v (world) into device frame: q^-1 * v * q
+  const u=[-q[1],-q[2],-q[3]], w=q[0];
+  const t=cross(u,v).map(c=>2*c), ct=cross(u,t);
+  return [v[0]+w*t[0]+ct[0], v[1]+w*t[1]+ct[1], v[2]+w*t[2]+ct[2]];
+}
+function worldToDev(v){
+  if (S.ori) return qRotConj(quatFromOri(...S.ori), v);
+  /* gravity-only fallback (yaw arbitrary; iOS flips accel sign vs Android) */
+  const sgn=(typeof DeviceMotionEvent!=="undefined" &&
+             DeviceMotionEvent.requestPermission)?-1:1;
+  const gm=Math.hypot(...S.g)||1;
+  const up=[sgn*S.g[0]/gm, sgn*S.g[1]/gm, sgn*S.g[2]/gm];
+  let e=cross(up,[0,0,1]), el=Math.hypot(...e);
+  if (el<1e-3){ e=cross(up,[1,0,0]); el=Math.hypot(...e); }
+  e=e.map(c=>c/el);
+  const n=cross(up,e);
+  return [v[0]*e[0]+v[1]*n[0]+v[2]*up[0],
+          v[0]*e[1]+v[1]*n[1]+v[2]*up[1],
+          v[0]*e[2]+v[1]*n[2]+v[2]*up[2]];
+}
+function drawGlobe(){
+  requestAnimationFrame(drawGlobe);
+  if ($("stage").hidden || S.phase==="done") return;
+  const c=GLB.ctx, R=100, cx=120, cy=120;
+  c.clearRect(0,0,240,240);
+  c.strokeStyle="#ffffff30"; c.lineWidth=1.5;
+  c.beginPath(); c.arc(cx,cy,R,0,7); c.stroke();
+  const A=(((screen.orientation&&screen.orientation.angle) ?? window.orientation) || 0)
+          *Math.PI/180;
+  const cA=Math.cos(A), sA=Math.sin(A);
+  const proj=v=>{const d=worldToDev(v);
+    const x=d[0]*cA+d[1]*sA, y=-d[0]*sA+d[1]*cA;
+    return [cx+x*R, cy-y*R, d[2]];};
+  for(const L of GLB.lines){
+    c.strokeStyle=L.eq?"#39d98acc":"#ffffff26"; c.lineWidth=L.w;
+    c.beginPath(); let pen=false;
+    for(const p of L.p){ const [px,py,z]=proj(p);
+      if (z>-0.02){ if(pen) c.lineTo(px,py); else {c.moveTo(px,py); pen=true;} }
+      else pen=false; }
+    c.stroke();
+  }
+  axisArrow(c,proj,[0,0,1],"#ffd21f",3);   // world up
+  axisArrow(c,proj,[1,0,0],"#7d8b94",1.5); // east (yaw reference, arbitrary)
+  axisArrow(c,proj,[0,1,0],"#7d8b94",1.5); // north
+}
+function axisArrow(c,proj,v,col,w){
+  const [x,y,z]=proj(v), cx=120, cy=120;
+  c.strokeStyle=col; c.lineWidth=w;
+  c.setLineDash(z<0?[3,3]:[]);
+  c.beginPath(); c.moveTo(cx,cy);
+  c.lineTo(cx+(x-cx)*0.92, cy+(y-cy)*0.92); c.stroke();
+  c.setLineDash([]);
+  c.fillStyle=col; c.beginPath(); c.arc(x,y,z<0?2:3.5,0,7); c.fill();
+}
+requestAnimationFrame(drawGlobe);
+
+/* ---------------- finish + bundle ---------------- */
+function finish(){
+  S.phase="done";
+  window.removeEventListener("devicemotion", onMotion);
+  window.removeEventListener("deviceorientation", onOrient);
+  S.track?.stop(); S.wakeLock?.release?.();
+  const last=S.shots[S.shots.length-1];
+  $("dFrames").textContent=S.shots.length;
+  $("dYaw").textContent=last.gyro_yaw_deg.toFixed(1)+"°";
+  $("dClosure").textContent=(last.gyro_yaw_deg-360).toFixed(1)+"°";
+  $("dImu").textContent=S.imu.length;
+  $("dLock").textContent=S.lockResult.split(":")[0];
+  $("stage").hidden=true; $("done").style.display="flex";
+  beep(500,80); setTimeout(()=>beep(750,80),120); setTimeout(()=>beep(1000,140),260);
+}
+
+$("dlBtn").addEventListener("click", async ()=>{
+  const meta={
+    app:"pano-capture-rig v1", created:new Date().toISOString(),
+    ua:navigator.userAgent,
+    n:S.n, step_deg:S.step, user_height_m:S.height,
+    canvas:{w:S.canvas.width,h:S.canvas.height},
+    track_settings:safe(()=>S.track.getSettings())||null,
+    track_capabilities:safe(()=>S.track.getCapabilities())||null,
+    exposure_lock:S.lockResult,
+    max_rate_dps:+S.maxRate.toFixed(1),
+    closure_residual_deg:+(S.shots[S.shots.length-1].gyro_yaw_deg-360).toFixed(2),
+    shots:S.shots,
+    notes:"Capture orientation: landscape (gravity expected on device x axis). imu.jsonl: type 'mot' = devicemotion (ax..az m/s^2 incl gravity, rx..rz deg/s, device axes x,y,z; rx=beta, ry=gamma, rz=alpha), type 'ori' = deviceorientation. t = performance.now() ms, same clock as shots[].t. Yaw = gyro projected on low-passed gravity; sign auto-detected from initial motion."
+  };
+  const files=[
+    {name:"meta.json", data:strBytes(JSON.stringify(meta,null,2))},
+    {name:"imu.jsonl", data:strBytes(S.imu.map(o=>JSON.stringify(o)).join("\n"))}
+  ];
+  for(let i=0;i<S.frames.length;i++){
+    const deg=String(Math.round(i*S.step)).padStart(3,"0");
+    files.push({name:`frames/f${String(i).padStart(2,"0")}_${deg}deg.jpg`,
+                data:new Uint8Array(await S.frames[i].arrayBuffer())});
+  }
+  const zip=makeZip(files);
+  const url=URL.createObjectURL(new Blob([zip],{type:"application/zip"}));
+  const a=document.createElement("a");
+  a.href=url; a.download="pano_capture_"+Date.now()+".zip";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),30000);
+});
+$("againBtn").addEventListener("click", ()=>location.reload());
+const safe=f=>{try{return f();}catch(e){return null;}};
+const strBytes=s=>new TextEncoder().encode(s);
+
+/* ---------------- minimal ZIP writer (store method, no deps) ---------------- */
+const CRC_T=(()=>{const t=new Uint32Array(256);
+  for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c;}
+  return t;})();
+function crc32(u8){let c=0xFFFFFFFF;
+  for(let i=0;i<u8.length;i++)c=CRC_T[(c^u8[i])&0xFF]^(c>>>8);
+  return (c^0xFFFFFFFF)>>>0;}
+function makeZip(files){
+  const enc=new TextEncoder(); const parts=[]; const central=[]; let off=0;
+  for(const f of files){
+    const name=enc.encode(f.name), d=f.data, crc=crc32(d);
+    const lh=new DataView(new ArrayBuffer(30));
+    lh.setUint32(0,0x04034b50,true); lh.setUint16(4,20,true);
+    lh.setUint16(8,0,true);                       // store
+    lh.setUint32(14,crc,true);
+    lh.setUint32(18,d.length,true); lh.setUint32(22,d.length,true);
+    lh.setUint16(26,name.length,true);
+    parts.push(new Uint8Array(lh.buffer),name,d);
+    const ch=new DataView(new ArrayBuffer(46));
+    ch.setUint32(0,0x02014b50,true); ch.setUint16(4,20,true); ch.setUint16(6,20,true);
+    ch.setUint32(16,crc,true);
+    ch.setUint32(20,d.length,true); ch.setUint32(24,d.length,true);
+    ch.setUint16(28,name.length,true);
+    ch.setUint32(42,off,true);
+    central.push(new Uint8Array(ch.buffer),name);
+    off+=30+name.length+d.length;
+  }
+  let cSize=0; central.forEach(u=>cSize+=u.length);
+  const end=new DataView(new ArrayBuffer(22));
+  end.setUint32(0,0x06054b50,true);
+  end.setUint16(8,files.length,true); end.setUint16(10,files.length,true);
+  end.setUint32(12,cSize,true); end.setUint32(16,off,true);
+  const total=off+cSize+22, out=new Uint8Array(total); let p=0;
+  for(const u of [...parts,...central,new Uint8Array(end.buffer)]){out.set(u,p);p+=u.length;}
+  return out;
+}
+</script>
+</body>
+</html>
